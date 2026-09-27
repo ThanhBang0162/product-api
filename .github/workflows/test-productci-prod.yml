@@ -1,0 +1,195 @@
+name: Product API CRUD CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crud-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      NODE_ENV: test
+      PORT: "3000"
+      MONGO_URI: mongodb://127.0.0.1:27017/productdb_ci
+
+    services:
+      mongodb:
+        image: mongo:8.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'quit(db.adminCommand({ping:1}).ok === 1 ? 0 : 1)'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+    steps:
+      - name: Lay ma nguon
+        uses: actions/checkout@v6
+
+      - name: Cai Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Cai thu vien
+        run: npm ci
+
+      - name: Khoi dong Product API
+        run: |
+          node src/server.js > api.log 2>&1 &
+          echo $! > api.pid
+
+      - name: Cho API va MongoDB san sang
+        run: |
+          for i in $(seq 1 30); do
+            if curl --fail --silent --max-time 3 \
+              http://127.0.0.1:3000/health; then
+              echo ""
+              echo "API va MongoDB da san sang"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "API khong san sang trong thoi gian cho"
+          cat api.log
+          exit 1
+
+      - name: Kiem thu healthcheck va CRUD
+        run: |
+          node <<'NODE'
+          const assert = require("node:assert/strict");
+
+          const base = "http://127.0.0.1:3000";
+
+          async function request(method, path, body) {
+            const response = await fetch(base + path, {
+              method,
+              headers: { "Content-Type": "application/json" },
+              body: body === undefined ? undefined : JSON.stringify(body),
+              signal: AbortSignal.timeout(5000)
+            });
+
+            const data = await response.json();
+            return { status: response.status, data };
+          }
+
+          function expectStatus(result, expected) {
+            assert.equal(
+              result.status,
+              expected,
+              JSON.stringify(result.data)
+            );
+          }
+
+          async function main() {
+            let result = await request("GET", "/health");
+            expectStatus(result, 200);
+            assert.equal(result.data.status, "ok");
+            assert.equal(result.data.mongodb, "connected");
+            console.log("PASS: Healthcheck API va MongoDB");
+
+            const product = {
+              pid: "CI001",
+              pname: "Ban phim",
+              price: 250000,
+              quantity: 10
+            };
+
+            result = await request("POST", "/api/products", product);
+            expectStatus(result, 201);
+            assert.equal(result.data.pid, product.pid);
+            console.log("PASS: Tao san pham");
+
+            result = await request("POST", "/api/products", product);
+            expectStatus(result, 409);
+            console.log("PASS: Tu choi pid trung");
+
+            result = await request("GET", "/api/products");
+            expectStatus(result, 200);
+            assert.ok(Array.isArray(result.data));
+            assert.ok(result.data.some(p => p.pid === product.pid));
+            console.log("PASS: Lay danh sach san pham");
+
+            result = await request("GET", "/api/products/CI001");
+            expectStatus(result, 200);
+            assert.equal(result.data.pname, product.pname);
+            assert.equal(result.data.price, product.price);
+            assert.equal(result.data.quantity, product.quantity);
+            console.log("PASS: Lay chi tiet va kiem tra du lieu da luu");
+
+            const updated = {
+              pname: "Ban phim co",
+              price: 350000,
+              quantity: 15
+            };
+
+            result = await request("PUT", "/api/products/CI001", updated);
+            expectStatus(result, 200);
+
+            result = await request("GET", "/api/products/CI001");
+            expectStatus(result, 200);
+            assert.equal(result.data.pname, updated.pname);
+            assert.equal(result.data.price, updated.price);
+            assert.equal(result.data.quantity, updated.quantity);
+            console.log("PASS: Cap nhat va doc lai du lieu");
+
+            result = await request("POST", "/api/products", {
+              pid: "INVALID_PRICE",
+              pname: "San pham loi",
+              price: -1,
+              quantity: 1
+            });
+            expectStatus(result, 400);
+            console.log("PASS: Tu choi gia am");
+
+            result = await request("POST", "/api/products", {
+              pid: "INVALID_QUANTITY",
+              pname: "San pham loi",
+              price: 1000,
+              quantity: 1.5
+            });
+            expectStatus(result, 400);
+            console.log("PASS: Tu choi so luong khong nguyen");
+
+            result = await request("POST", "/api/products", {});
+            expectStatus(result, 400);
+            console.log("PASS: Tu choi du lieu thieu");
+
+            result = await request("DELETE", "/api/products/CI001");
+            expectStatus(result, 200);
+
+            result = await request("GET", "/api/products/CI001");
+            expectStatus(result, 404);
+            console.log("PASS: Xoa san pham va kiem tra khong con");
+
+            console.log("TAT CA KIEM THU DA THANH CONG");
+          }
+
+          main().catch(error => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
+
+      - name: Xem log API khi loi
+        if: failure()
+        run: cat api.log || true
+
+      - name: Dung API
+        if: always()
+        run: |
+          if [ -f api.pid ]; then
+            kill "$(cat api.pid)" || true
+          fi
