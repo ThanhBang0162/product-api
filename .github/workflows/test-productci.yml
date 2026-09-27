@@ -1,0 +1,41 @@
+name: Product API Basic CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  basic-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Lay ma nguon
+        uses: actions/checkout@v6
+
+      - name: Cai Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Cai thu vien
+        run: npm ci
+
+      - name: Kiem tra cu phap JavaScript
+        run: |
+          node --check src/app.js
+          node --check src/server.js
+          node --check src/models/Product.js
+          node --check src/routes/products.js
+
+      - name: Kiem tra nap ung dung
+        run: |
+          node -e "const assert = require('node:assert/strict'); const app = require('./src/app'); assert.equal(typeof app.listen, 'function'); console.log('Nap Product API thanh cong');"
+          
