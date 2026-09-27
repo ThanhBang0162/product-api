@@ -10,8 +10,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: product-api-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   crud-test:
+    name: crud-test
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -70,7 +75,6 @@ jobs:
         run: |
           node <<'NODE'
           const assert = require("node:assert/strict");
-
           const base = "http://127.0.0.1:3000";
 
           async function request(method, path, body) {
@@ -102,16 +106,12 @@ jobs:
           }
 
           async function main() {
-            // Kiem tra API va ket noi MongoDB
             let result = await request("GET", "/health");
-
             expectStatus(result, 200);
             assert.equal(result.data.status, "ok");
             assert.equal(result.data.mongodb, "connected");
-
             console.log("PASS: Healthcheck API va MongoDB");
 
-            // Tao san pham
             const product = {
               pid: "CI001",
               pname: "Ban phim",
@@ -124,53 +124,36 @@ jobs:
               "/api/products",
               product
             );
-
             expectStatus(result, 201);
             assert.equal(result.data.pid, product.pid);
-
             console.log("PASS: Tao san pham");
 
-            // Tu choi ma san pham trung
             result = await request(
               "POST",
               "/api/products",
               product
             );
-
             expectStatus(result, 409);
-
             console.log("PASS: Tu choi pid trung");
 
-            // Lay danh sach san pham
             result = await request("GET", "/api/products");
-
             expectStatus(result, 200);
             assert.ok(Array.isArray(result.data));
             assert.ok(
               result.data.some(p => p.pid === product.pid)
             );
-
             console.log("PASS: Lay danh sach san pham");
 
-            // Lay chi tiet va kiem tra du lieu da luu
             result = await request(
               "GET",
               "/api/products/CI001"
             );
-
             expectStatus(result, 200);
             assert.equal(result.data.pname, product.pname);
             assert.equal(result.data.price, product.price);
-            assert.equal(
-              result.data.quantity,
-              product.quantity
-            );
+            assert.equal(result.data.quantity, product.quantity);
+            console.log("PASS: Doc chi tiet san pham");
 
-            console.log(
-              "PASS: Lay chi tiet va kiem tra du lieu da luu"
-            );
-
-            // Cap nhat san pham
             const updated = {
               pname: "Ban phim co",
               price: 350000,
@@ -182,81 +165,64 @@ jobs:
               "/api/products/CI001",
               updated
             );
-
             expectStatus(result, 200);
 
-            // Doc lai de xac nhan cap nhat thanh cong
             result = await request(
               "GET",
               "/api/products/CI001"
             );
-
             expectStatus(result, 200);
             assert.equal(result.data.pname, updated.pname);
             assert.equal(result.data.price, updated.price);
-            assert.equal(
-              result.data.quantity,
-              updated.quantity
+            assert.equal(result.data.quantity, updated.quantity);
+            console.log("PASS: Cap nhat va doc lai san pham");
+
+            result = await request(
+              "POST",
+              "/api/products",
+              {
+                pid: "INVALID_PRICE",
+                pname: "San pham loi",
+                price: -1,
+                quantity: 1
+              }
             );
-
-            console.log("PASS: Cap nhat va doc lai du lieu");
-
-            // Tu choi gia am
-            result = await request("POST", "/api/products", {
-              pid: "INVALID_PRICE",
-              pname: "San pham loi",
-              price: -1,
-              quantity: 1
-            });
-
             expectStatus(result, 400);
-
             console.log("PASS: Tu choi gia am");
 
-            // Tu choi so luong khong nguyen
-            result = await request("POST", "/api/products", {
-              pid: "INVALID_QUANTITY",
-              pname: "San pham loi",
-              price: 1000,
-              quantity: 1.5
-            });
-
-            expectStatus(result, 400);
-
-            console.log(
-              "PASS: Tu choi so luong khong nguyen"
+            result = await request(
+              "POST",
+              "/api/products",
+              {
+                pid: "INVALID_QUANTITY",
+                pname: "San pham loi",
+                price: 1000,
+                quantity: 1.5
+              }
             );
+            expectStatus(result, 400);
+            console.log("PASS: Tu choi so luong khong nguyen");
 
-            // Tu choi du lieu thieu
             result = await request(
               "POST",
               "/api/products",
               {}
             );
-
             expectStatus(result, 400);
-
             console.log("PASS: Tu choi du lieu thieu");
 
-            // Xoa san pham
             result = await request(
               "DELETE",
               "/api/products/CI001"
             );
-
             expectStatus(result, 200);
 
-            // Kiem tra san pham khong con sau khi xoa
             result = await request(
               "GET",
               "/api/products/CI001"
             );
-
             expectStatus(result, 404);
-
-            console.log(
-              "PASS: Xoa san pham va kiem tra khong con"
-            );
+            console.log("PASS: Xoa san pham");
 
             console.log("TAT CA KIEM THU DA THANH CONG");
           }
@@ -279,6 +245,7 @@ jobs:
           fi
 
   publish:
+    name: publish
     needs: crud-test
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -305,3 +272,73 @@ jobs:
         run: |
           docker push thanhbang0162/product-api:${{ github.sha }}
           docker push thanhbang0162/product-api:latest
+
+  deploy-local:
+    name: deploy-local
+    needs: publish
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        shell: powershell
+        working-directory: C:\Users\Bang\projects\product-api
+
+    steps:
+      - name: Kiem tra Docker va file cau hinh
+        run: |
+          docker info
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker Desktop chua san sang"
+          }
+
+          if (-not (Test-Path "docker-compose-prod.yaml")) {
+            throw "Khong tim thay docker-compose-prod.yaml"
+          }
+
+          if (-not (Test-Path ".env")) {
+            throw "Khong tim thay file .env tren may local"
+          }
+
+          docker compose -f docker-compose-prod.yaml config --quiet
+          if ($LASTEXITCODE -ne 0) {
+            throw "Cau hinh Docker Compose khong hop le"
+          }
+
+      - name: Tai image tu Docker Hub
+        run: |
+          docker compose -f docker-compose-prod.yaml pull api
+          if ($LASTEXITCODE -ne 0) {
+            throw "Khong tai duoc image tu Docker Hub"
+          }
+
+      - name: Cap nhat container va cho healthcheck
+        run: |
+          docker compose -f docker-compose-prod.yaml up -d --wait --wait-timeout 120
+          if ($LASTEXITCODE -ne 0) {
+            throw "Trien khai hoac healthcheck that bai"
+          }
+
+      - name: Kiem tra API sau trien khai
+        run: |
+          $result = Invoke-RestMethod `
+            -Uri "http://127.0.0.1:3000/health" `
+            -TimeoutSec 10
+
+          if ($result.status -ne "ok" -or $result.mongodb -ne "connected") {
+            throw "API hoac MongoDB chua san sang"
+          }
+
+          $result | ConvertTo-Json
+
+          docker compose -f docker-compose-prod.yaml ps
+          if ($LASTEXITCODE -ne 0) {
+            throw "Khong doc duoc trang thai container"
+          }
+
+      - name: Xem log khi trien khai loi
+        if: failure()
+        run: |
+          docker compose -f docker-compose-prod.yaml ps
+          docker compose -f docker-compose-prod.yaml logs --tail 80

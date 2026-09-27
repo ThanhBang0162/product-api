@@ -34,7 +34,6 @@ services:
         condition: service_healthy
     healthcheck:
       test:
-        - CMD
         - node
         - -e
         - "fetch('http://127.0.0.1:3000/health', { signal: AbortSignal.timeout(3000) }).then(r => process.exit(r.status === 200 ? 0 : 1)).catch(() => process.exit(1))"
