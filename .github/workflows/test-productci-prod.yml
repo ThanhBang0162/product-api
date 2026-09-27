@@ -76,13 +76,21 @@ jobs:
           async function request(method, path, body) {
             const response = await fetch(base + path, {
               method,
-              headers: { "Content-Type": "application/json" },
-              body: body === undefined ? undefined : JSON.stringify(body),
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: body === undefined
+                ? undefined
+                : JSON.stringify(body),
               signal: AbortSignal.timeout(5000)
             });
 
             const data = await response.json();
-            return { status: response.status, data };
+
+            return {
+              status: response.status,
+              data
+            };
           }
 
           function expectStatus(result, expected) {
@@ -94,12 +102,16 @@ jobs:
           }
 
           async function main() {
+            // Kiem tra API va ket noi MongoDB
             let result = await request("GET", "/health");
+
             expectStatus(result, 200);
             assert.equal(result.data.status, "ok");
             assert.equal(result.data.mongodb, "connected");
+
             console.log("PASS: Healthcheck API va MongoDB");
 
+            // Tao san pham
             const product = {
               pid: "CI001",
               pname: "Ban phim",
@@ -107,72 +119,144 @@ jobs:
               quantity: 10
             };
 
-            result = await request("POST", "/api/products", product);
+            result = await request(
+              "POST",
+              "/api/products",
+              product
+            );
+
             expectStatus(result, 201);
             assert.equal(result.data.pid, product.pid);
+
             console.log("PASS: Tao san pham");
 
-            result = await request("POST", "/api/products", product);
+            // Tu choi ma san pham trung
+            result = await request(
+              "POST",
+              "/api/products",
+              product
+            );
+
             expectStatus(result, 409);
+
             console.log("PASS: Tu choi pid trung");
 
+            // Lay danh sach san pham
             result = await request("GET", "/api/products");
+
             expectStatus(result, 200);
             assert.ok(Array.isArray(result.data));
-            assert.ok(result.data.some(p => p.pid === product.pid));
+            assert.ok(
+              result.data.some(p => p.pid === product.pid)
+            );
+
             console.log("PASS: Lay danh sach san pham");
 
-            result = await request("GET", "/api/products/CI001");
+            // Lay chi tiet va kiem tra du lieu da luu
+            result = await request(
+              "GET",
+              "/api/products/CI001"
+            );
+
             expectStatus(result, 200);
             assert.equal(result.data.pname, product.pname);
             assert.equal(result.data.price, product.price);
-            assert.equal(result.data.quantity, product.quantity);
-            console.log("PASS: Lay chi tiet va kiem tra du lieu da luu");
+            assert.equal(
+              result.data.quantity,
+              product.quantity
+            );
 
+            console.log(
+              "PASS: Lay chi tiet va kiem tra du lieu da luu"
+            );
+
+            // Cap nhat san pham
             const updated = {
               pname: "Ban phim co",
               price: 350000,
               quantity: 15
             };
 
-            result = await request("PUT", "/api/products/CI001", updated);
+            result = await request(
+              "PUT",
+              "/api/products/CI001",
+              updated
+            );
+
             expectStatus(result, 200);
 
-            result = await request("GET", "/api/products/CI001");
+            // Doc lai de xac nhan cap nhat thanh cong
+            result = await request(
+              "GET",
+              "/api/products/CI001"
+            );
+
             expectStatus(result, 200);
             assert.equal(result.data.pname, updated.pname);
             assert.equal(result.data.price, updated.price);
-            assert.equal(result.data.quantity, updated.quantity);
+            assert.equal(
+              result.data.quantity,
+              updated.quantity
+            );
+
             console.log("PASS: Cap nhat va doc lai du lieu");
 
+            // Tu choi gia am
             result = await request("POST", "/api/products", {
               pid: "INVALID_PRICE",
               pname: "San pham loi",
               price: -1,
               quantity: 1
             });
+
             expectStatus(result, 400);
+
             console.log("PASS: Tu choi gia am");
 
+            // Tu choi so luong khong nguyen
             result = await request("POST", "/api/products", {
               pid: "INVALID_QUANTITY",
               pname: "San pham loi",
               price: 1000,
               quantity: 1.5
             });
-            expectStatus(result, 400);
-            console.log("PASS: Tu choi so luong khong nguyen");
 
-            result = await request("POST", "/api/products", {});
             expectStatus(result, 400);
+
+            console.log(
+              "PASS: Tu choi so luong khong nguyen"
+            );
+
+            // Tu choi du lieu thieu
+            result = await request(
+              "POST",
+              "/api/products",
+              {}
+            );
+
+            expectStatus(result, 400);
+
             console.log("PASS: Tu choi du lieu thieu");
 
-            result = await request("DELETE", "/api/products/CI001");
+            // Xoa san pham
+            result = await request(
+              "DELETE",
+              "/api/products/CI001"
+            );
+
             expectStatus(result, 200);
 
-            result = await request("GET", "/api/products/CI001");
+            // Kiem tra san pham khong con sau khi xoa
+            result = await request(
+              "GET",
+              "/api/products/CI001"
+            );
+
             expectStatus(result, 404);
-            console.log("PASS: Xoa san pham va kiem tra khong con");
+
+            console.log(
+              "PASS: Xoa san pham va kiem tra khong con"
+            );
 
             console.log("TAT CA KIEM THU DA THANH CONG");
           }
@@ -193,3 +277,31 @@ jobs:
           if [ -f api.pid ]; then
             kill "$(cat api.pid)" || true
           fi
+
+  publish:
+    needs: crud-test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Lay ma nguon
+        uses: actions/checkout@v6
+
+      - name: Dang nhap Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t thanhbang0162/product-api:latest \
+            -t thanhbang0162/product-api:${{ github.sha }} \
+            .
+
+      - name: Push Docker image
+        run: |
+          docker push thanhbang0162/product-api:${{ github.sha }}
+          docker push thanhbang0162/product-api:latest
